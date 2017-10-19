@@ -1,0 +1,201 @@
+---
+title: "Assignment2_Part1_VoiceInSchizophrenia"
+author: "Riccardo Fusaroli"
+date: "July 17, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r pressure}
+
+```
+
+## Assignment 2 - Part 1 - Assessing voice in schizophrenia
+
+Schizophrenia has been associated with "inappropriate" voice, sometimes monotone, sometimes croaky. A few studies indicate that pitch might be an index of schizophrenia. However, an ongoing meta-analysis of the literature (which you will have a go at in the last assignment) indicates that pitch mean and standard deviation are only weak indicators of diagnosis. Can we do better with our new fancy complex skills?
+
+The corpus you are asked to analyse is a set of voice recordings from people with schizophrenia (just after first diagnosis) and 1-1 matched controls (on gender, age, education). Each participant watched 10 videos of triangles moving across the screen and had to describe them (so you have circa 10 recordings per person). I have already extracted the pitch once every 10 milliseconds and you will have to use this data to assess differences in the voice.
+
+N.B. Question to be answered via email to Celine: can you characterize voice in schizophrenia as acoustically different? Report the methods you used to answer this question and the results from the analyses. Add a couple of lines trying to interpret the results (make sense of the difference). E.g. People with schizophrenia tend to have high-pitched voice, and present bigger swings in their prosody than controls. Add a couple of lines describing limitations of the data/analyses if any is relevant.
+
+N.B. There are looots of files to be dealt with. Probably too many for your computer. This is a challenge for you. Some (complementary) possible strategies: You can select a subset of files only (and you have to justify your choice). You can learn how to use the apply() or map() functions. You can coordinate with classmates.
+
+1. In the course of this assignment you have to first select one datafile and figure out how to:
+
+- Extract "standard" descriptors of pitch: Mean, standard deviation, range
+```{r pressure}
+#getwd()
+studyone= read.table("Pitch/Study1D0S101T2_f0.txt", header=T)
+
+demo_data= read.table("DemoData.txt", header=T)
+
+
+mean=mean(studyone$f0)
+sd=sd(studyone$f0)
+minimum= min(studyone$f0)
+maximum=max(studyone$f0)
+```
+- Extract less "standard" descriptors of pitch you can think of (e.g. median, iqr, mean absoluted deviation, coefficient of variation)
+
+iqr like sd but doesn't assume the bell form
+mean absolute deviation: the difference of a value from the mean - make it absolute value to remove minuses - get the mean of them
+coef of variation= sd/mean
+```{r pressure}
+median=median(studyone$f0)
+iqr=IQR(studyone$f0)
+meanad= mean(abs(studyone$f0 - mean(studyone$f0)))
+coefvar=sd/mean*100
+
+
+first_data=cbind(mean, sd, minimum, maximum, median, iqr, meanad,coefvar) 
+```
+
+- Extract "complex" descriptors: recurrence quantification analysis
+
+```{r pressure}
+
+library(crqa)
+#Finding the optimal parameters: 
+par = list(lgM =  50, steps = seq(1, 6, 1),  radiusspan = 100,  radiussample = 40, normalize = 0,  rescale = 0,  mindiagline = 2,  minvertline = 2,  tw = 0,  whiteline = FALSE,  recpt = FALSE,  fnnpercent = 10,  typeami = "mindip") 
+ans= optimizeParam(studyone$f0, studyone$f0, par, min.rec= 3.5, max.rec= 4.5)
+#Choose a common value for delay, emb.dim and radius
+Results=crqa (studyone$f0, studyone$f0, delay=35, embed=3, radius=5.717789, normalize=0,rescale=0,mindiagline = 2,minvertline = 2)
+
+# #Represent the plot: 
+# RP=Results$RP 
+# RP = matrix(as.numeric(RP), nrow = ncol(RP))  
+# cols = c("white","blue4") 
+# image(RP, xlab = "", ylab = "", col = cols) 
+
+#Save the information from crqa
+
+RR= Results$RR
+DET= Results$DET
+maxL=Results$maxL
+L=Results$L
+ENTR=Results$ENTR
+LAM=Results$LAM
+TT=Results$TT
+
+reqan=data.frame(RR, DET, maxL, L, ENTR, LAM, TT)
+
+all_data=merge(first_data, reqan)
+```
+
+2. Second you will have to turn the code into a function and loop through all the files (or even better use apply/sapply/lapply)
+- Remember to extract the relevant information from the file names (Participant, Diagnosis, Trial, Study)
+```{r pressure}
+#read in all the files
+#save their names to a list
+#use the list to read in everything
+file_list = list.files(path= "Pitch", full.names=T)
+all_files=lapply(file_list, FUN=read.table, header=TRUE)
+
+#How does this part even work???? It gives me back the names of the files. 
+#First 7 letters get removed by substring() because the name has Pitch/ in it when it is read in.
+#50 is just the number where it should stop when reading in the name - it is just a really big number so it reads in all of it.
+#23 could be used if all the names were exactly the same length to cut off ".txt"
+#but there is a function to cut off the .txt part.
+
+names(all_files)= substring(file_list, 7, 50)
+
+chocolate=names(all_files)
+
+# save the basic code to come back if stuff goes wrong
+# chocolate[1]
+# study= substring(chocolate[1], 6, 6)
+# diagnosis= substring(chocolate[1], 8, 8)
+# id= substring(chocolate[1], 10, 12)
+# trial= substring(chocolate[1], 13, 14)
+# basic= data.frame(study, id, trial, diagnosis)
+
+#to make it merge-able, rename and revalue stuff
+demo_data$Diagnosis=plyr::revalue(demo_data$Diagnosis, c("Control"="0", "Schizophrenia"="1"))
+demo_data = plyr::rename(demo_data, c("Diagnosis" = "diagnosis"))
+demo_data = plyr::rename(demo_data, c("Study" = "study"))
+demo_data = plyr::rename(demo_data, c("Subject" = "id"))
+
+
+#make a loop to get out all basic from all filenames
+
+i= 1
+basic_data=data.frame()
+
+for (z in chocolate) {
+  study= substring(chocolate[i], 6, 6)
+  diagnosis= substring(chocolate[i], 8, 8)
+  id= substring(chocolate[i], 10, 12)
+  #trial= substring(chocolate[i], 13, 15)
+  tr= unlist(regmatches(chocolate[i], regexec("T(.+)_", chocolate[i])))
+  trial= tr[2]
+  basic= cbind(study, id, trial, diagnosis)
+  basic_data=rbind(basic_data, basic)
+  i=i+1
+}
+
+rm(basic, z, study, diagnosis, trial, id, i, tr)
+
+basic_and_demo=merge(basic_data, demo_data)
+
+#---------------------------------------------------------------
+
+#delete later
+# bottle= "Study4D1S446T10_f0.txt"
+# pls= regmatches(bottle, regexec("Study(.+)D", bottle))
+# pls= regmatches(bottle, regexec("D(.+)S", bottle))
+# 
+# pls= unlist(regmatches(bottle, regexec("T(.+)_", bottle)))
+# trial= pls[2]
+# 
+# regmatches(tt, regexpr("[0-9].*[0-9]", tt))
+# regmatches(x, regexec("Study(.+)D", x))
+
+```
+
+
+```{r pressure}
+# it. should. be. a. bloody. function. where do I even start? Probably at fixing the loop that does not work.
+
+# i=0
+# bdata=data.frame()
+# from_title= function() {
+#   file_list = list.files(path= "Pitch", full.names=T)
+#   all_files=lapply(file_list, FUN=read.table, header=TRUE)
+#   names(all_files)= substring(file_list, 7, 50)
+#   chocolate=names(all_files)
+#   for (z in chocolate) {
+#     chocolate[i]
+#     study= substring(chocolate[i], 6, 6)
+#     diagnosis= substring(chocolate[i], 8, 8)
+#     id= substring(chocolate[i], 10, 12)
+#     trial= substring(chocolate[i], 13, 14)
+#     
+#     basic= cbind(study, id, trial, diagnosis)
+#     bdata=rbind(bdata, basic)
+#     i=i+1
+#     }
+# }
+  
+
+```
+
+3. Make one model per acoustic feature and test whether you can observe significant difference due to Diagnosis. Tip: Which other fixed factors should you control for (that is, include in the model)? Which random ones?
+- Bonus points: cross-validate the model and report the betas and standard errors from all rounds to get an idea of how robust the estimates are. 
+```{r pressure}
+
+```
+3a. Is study a significant predictor in these models? What should you infer from this? Does study interact with diagnosis? What should you infer from this?
+
+4. Bonus Question: Compare effect size of diagnosis across the different measures. Which measure seems most sensitive?
+- Tip: to compare across measures you need to put all of them on the same scale, that is, you need to "standardize" them (z-score)
+
+5. Bonus question. In the Clinical Info file you have additional information about the participants. Which additional parameters (e.g. age, gender) should we control for? Report the effects.
+
+6. Write a paragraph reporting methods and results
+
+[Next assignment: can we use these measures to build a tool that diagnoses people from voice only?]
+
+## N.B. Remember to save the acoustic features of voice in a separate file, so to be able to load them next time
