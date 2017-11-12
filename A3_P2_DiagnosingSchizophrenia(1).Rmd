@@ -1,0 +1,559 @@
+---
+title: "Assignment 3 - Part 2 - Diagnosing Schizophrenia from Voice"
+author: "Riccardo Fusaroli"
+date: "October 17, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Assignment 3 - Diagnosing schizophrenia from voice
+
+In the previous part of the assignment you generated a bunch of "features", that is, of quantitative descriptors of voice in schizophrenia, focusing on pitch.
+In the course of this assignment we will use them to try to automatically diagnose schizophrenia from voice only, that is, relying on the set of features you produced last time, we will try to produce an automated classifier.
+
+```{r}
+
+#library(CVMS) ??CVMS
+
+#read in data
+port3_data= read.csv("port3_data.csv")
+
+port3_data$id= as.factor(as.numeric(as.factor(port3_data$id)))
+port3_data$diagnosis= as.factor(port3_data$diagnosis)
+port3_data$diagnosis=plyr::revalue(port3_data$diagnosis, c("0"="Control", "1"="Schizophrenia"))
+port3_data$diagnosis= relevel(port3_data$diagnosis, ref= "Control")
+
+#get out NAs
+port3_data=na.omit(port3_data)
+#Upsample because of imbalanced data
+port3_data<- upSample(x = port3_data,   y = port3_data$diagnosis,  yname = "diagnosis")
+
+```
+
+
+### Question 1: Can you diagnose schizophrenia from pitch range only? If so, how well?
+
+Build a logistic regression to see whether you can diagnose schizophrenia from pitch range only.
+Calculate the different performance measures (accuracy, sensitivity, specificity, PPV, NPV, ROC curve) on a logistic regression using the full dataset. Don't forget the random effects!
+
+```{r}
+
+library(lmerTest)
+
+model= glmer(diagnosis ~ range  + (1 + trial | study) + (1 + trial | id),port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+#people react differently to the passage of time and they might perform differently. use id_diff for models because they are differnet people but use id for the cross validation
+#doesn't work with id_diff, so using id
+
+summary(model) #range -0.0020353  0.0009354  -2.176   0.0296
+
+#Confusion matrix
+port3_data$PredictionsPerc=predict(model, type="response") #positive: scizo, negative: control
+port3_data$Predictions[port3_data$PredictionsPerc>0.5]="Schizophrenia" 
+port3_data$Predictions[port3_data$PredictionsPerc<=0.5]="Control"
+caret::confusionMatrix(data = port3_data$Predictions, reference = port3_data$diagnosis, positive = "Control") #control is the baseline
+
+#rigth upper corner is false negative (person is sick but is said to be ok)
+#left down corner is false positive (person is ok but is said to be sick)
+#basically predicts by chance
+#its better to have people treated than not treated, so move the treshold to 0.4 later
+#need to use same id - treated as "one", so we don't cross-validate on pairs (0101 won't be in the three_fold when 1101 is in the one_fold)
+
+#Rock curve
+library(pROC) 
+rocCurve <- pROC::roc(response = port3_data$diagnosis,   predictor = port3_data$PredictionsPerc) 
+auc(rocCurve) #0.584
+ci (rocCurve) #95% CI: 0.5461-0.622
+plot(rocCurve, legacy.axes = TRUE) 
+
+```
+
+Then cross-validate the logistic regression and re-calculate performance on the testing folds. N.B. The cross-validation functions you already have should be tweaked: you need to calculate these new performance measures.
+
+```{r}
+
+
+#create a function for %not in% - from the net
+"%not in%" <- function (x, table) is.na(match(x, table, nomatch=NA_integer_))
+
+#create empty dataframes to save output from cross-validation
+croval_test= data.frame() #for the test data
+rm(saving)
+
+
+#create folds
+#using 4 folds for now, generally they use 5
+#use unique so the data from one child goes to one fold
+folds=createFolds(unique(port3_data$id), 4)
+
+#loop through the folds
+for (i in folds) {
+  #create a dataframe that has 3 folds - this is the train data
+  three_fold = subset(port3_data, id %not in% i)
+  #create a dataframe that has 1 fold - this is the test data
+  one_fold= subset(port3_data, id %in% i)
+  # fit the model to 3/4 of the data
+  model2= glmer(diagnosis ~ range  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  # predict the 1/4 of the data
+  pred=predict(model2, one_fold, type="response", allow.new.levels = T) 
+  idf=one_fold$id
+  idd=as.numeric(one_fold$id_diff)
+  diag=one_fold$diagnosis
+  saving= cbind(pred, idf, idd, diag)
+  # save the prediction to a dataframe
+  croval_test = rbind(croval_test, saving)
+}
+
+#correct the variables
+croval_test$diag= as.factor(croval_test$diag)
+croval_test$diag=plyr::revalue(croval_test$diag, c("1"="Control", "2"="Schizophrenia"))
+
+#calculate performance
+croval_test$diag= relevel(croval_test$diag, ref= "Control")
+croval_test$prediction[croval_test$pred>0.5]="Schizophrenia" 
+croval_test$prediction[croval_test$pred<=0.5]="Control"
+conf_matrix= caret::confusionMatrix(data = croval_test$prediction, reference = croval_test$diag, positive = "Control")
+
+accuracy=conf_matrix$overall[1]
+kappa=conf_matrix$overall[2]
+sensitivity=conf_matrix$byClass[1]
+specificity=conf_matrix$byClass[2]
+ppv=conf_matrix$byClass[3]
+npv=conf_matrix$byClass[4]
+
+result_conf_matrix= data.frame(accuracy, kappa, sensitivity, specificity, ppv, npv)
+
+rocCurve <- pROC::roc(response = croval_test$diag, predictor = croval_test$pred) 
+pROC::auc(rocCurve) #
+pROC::ci (rocCurve) #
+plot(rocCurve, legacy.axes = TRUE)
+
+```
+
+```{r}
+
+#make it into a function (well, partially)
+
+"%not in%" <- function (x, table) is.na(match(x, table, nomatch=NA_integer_))
+
+#create empty dataframes to save output from cross-validation
+#croval_test= data.frame() #for the test data
+
+#create folds
+folds=createFolds(unique(port3_data$id), 4)
+
+#make tiny function to reduce the size of the loop
+f_save= function() {
+  idf=one_fold$id
+  idd=as.numeric(one_fold$id_diff)
+  diag=one_fold$diagnosis
+  cbind(pred, idf, idd, diag) #saving=
+}
+
+#a function to calculate performance (the rocCurve too)
+f_conf_mat= function() {
+  #correct the variables
+  croval_test$diag= as.factor(croval_test$diag)
+  croval_test$diag=plyr::revalue(croval_test$diag, c("1"="Control", "2"="Schizophrenia"))
+  
+  #calculate performance
+  croval_test$diag= relevel(croval_test$diag, ref= "Control")
+  croval_test$prediction[croval_test$pred>0.5]="Schizophrenia" 
+  croval_test$prediction[croval_test$pred<=0.5]="Control"
+  conf_matrix= caret::confusionMatrix(data = croval_test$prediction, 
+                                      reference = croval_test$diag, positive = "Control")
+  
+  accuracy=conf_matrix$overall[1]
+  kappa=conf_matrix$overall[2]
+  sensitivity=conf_matrix$byClass[1]
+  specificity=conf_matrix$byClass[2]
+  ppv=conf_matrix$byClass[3]
+  npv=conf_matrix$byClass[4]
+  
+  result_conf_matrix= data.frame(accuracy, kappa, sensitivity, specificity, ppv, npv)
+  
+  # rocCurve= pROC::roc(response = croval_test$diag, predictor = croval_test$pred) 
+  # pROC::auc(rocCurve) 
+  # pROC::ci (rocCurve) 
+  # plot(rocCurve, legacy.axes = TRUE)
+  
+  return(result_conf_matrix) 
+}
+```
+
+N.B. the predict() function generates log odds (the full scale between minus and plus infinity). Log odds > 0 indicates a choice of 1, below a choice of 0.
+N.B. you need to decide whether calculate performance on each single test fold or save all the prediction for test folds in one datase, so to calculate overall performance.
+N.B. Now you have two levels of structure: subject and study. Should this impact your cross-validation?
+
+### Question 2 - Which single acoustic predictor is the best predictor of diagnosis?
+```{r pressure}
+
+#using same folds for all of the cross-validations
+
+#-----------
+#***range***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ range  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_range=f_conf_mat()
+
+#-----------
+#***mean***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ mean  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_mean=f_conf_mat()
+
+#-----------
+#***sd***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ sd  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_sd=f_conf_mat()
+
+#-----------
+#***minimum***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ minimum  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_minimum=f_conf_mat()
+
+#-----------
+#***maximum***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ maximum  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_maximum=f_conf_mat()
+
+#-----------
+#***median***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ median  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_median=f_conf_mat()
+
+#-----------
+#***iqr***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ iqr  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_iqr=f_conf_mat()
+
+#-----------
+#***meanad***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ meanad  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_meanad=f_conf_mat()
+
+#-----------
+#***coefvar***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ coefvar  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_coefvar=f_conf_mat()
+
+#-----------
+#***RR***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ RR  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_RR=f_conf_mat()
+
+#-----------
+#***DET***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ DET  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_DET=f_conf_mat()
+
+#-----------
+#***maxL***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ maxL  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_maxL=f_conf_mat()
+
+#-----------
+#***L***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ L  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_L=f_conf_mat()
+
+#-----------
+#***ENTR***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ ENTR  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_ENTR=f_conf_mat()
+
+#-----------
+#***LAM***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ LAM  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_LAM=f_conf_mat()
+
+#-----------
+#***TT***
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ TT  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#use croval_test to calculate performance
+result_TT=f_conf_mat()
+
+#-------------
+
+all_result= rbind(result_range, result_mean, result_sd, result_minimum, result_maximum, 
+                  result_median, result_iqr, result_meanad, result_coefvar, result_RR, 
+                  result_DET, result_maxL, result_L, result_ENTR, result_LAM,  result_TT)
+
+acoustic_list= c("range", "mean", "sd", "minimum", "maximum", "median", "iqr", 
+                 "meanad", "coefvar", "RR", "DET", "maxL", "L", "ENTR", "LAM", "TT")
+
+row.names(all_result)= acoustic_list
+
+#write.csv(all_result, file= "acoustic features confusion matrix.csv")
+
+```
+
+```{r}
+#find the features with highest values
+rownames(all_result)[apply(all_result, 2, which.max)]
+
+#"coefvar" "coefvar" "maximum" "coefvar" "coefvar" "minimum"
+
+#take a look at coefvar
+
+croval_test= data.frame()
+rm(saving)
+
+#loop through the folds
+for (i in folds) {
+  three_fold = subset(port3_data, id %not in% i)
+  one_fold= subset(port3_data, id %in% i)
+  modelx= glmer(diagnosis ~ coefvar  + (1 + trial | study) + (1 + trial | id), three_fold, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+  pred=predict(modelx, one_fold, type="response", allow.new.levels = T) 
+  saving=f_save()
+  croval_test = rbind(croval_test, saving)
+}
+#correct the variables
+croval_test$diag= as.factor(croval_test$diag)
+croval_test$diag=plyr::revalue(croval_test$diag, c("1"="Control", "2"="Schizophrenia"))
+
+#calculate performance
+croval_test$diag= relevel(croval_test$diag, ref= "Control")
+croval_test$prediction[croval_test$pred>0.45]="Schizophrenia" 
+croval_test$prediction[croval_test$pred<=0.45]="Control"
+caret::confusionMatrix(data = croval_test$prediction, 
+                                    reference = croval_test$diag, positive = "Control")
+
+rocCurve= pROC::roc(response = croval_test$diag, predictor = croval_test$pred)
+pROC::auc(rocCurve) #Area under the curve: 0.663
+pROC::ci (rocCurve) #95% CI: 0.627-0.6991 (DeLong)
+plot(rocCurve, legacy.axes = TRUE)
+
+```
+
+Coefficient of variance is the best single acoustic predictor of diagnosis. (It is quite bad at sensitivity, so there are many false negatives. But that is alright, it is better to predict that somebody is sick than judging somebody as healthy while being sick.) #treshold moved to 4.5 to get better specificity - decision based on eye-balling the ROC curve... #Area under the curve: 0.663
+
+### Question 3 - Which combination of acoustic predictors is best for diagnosing schizophrenia?
+
+Now it's time to go wild! Use all (voice-related) variables and interactions you can think of. Compare models and select the best performing model you can find.
+
+Remember:
+- Out-of-sample error crucial to build the best model!
+- After choosing the model, send Celine and Riccardo the code of your model
+
+### Question 4: Properly report the results
+
+METHODS SECTION: how did you analyse the data? That is, how did you extract the data, designed the models and compared their performance?
+
+RESULTS SECTION: can you diagnose schizophrenia based on voice? which features are used? Comment on the difference between the different performance measures.
+
+### Bonus question 5
+
+You have some additional bonus data involving speech rate, pauses, etc. Include them in your analysis. Do they improve classification?
+
+### Bonus question 6
+
+Logistic regression is only one of many classification algorithms. Try using others and compare performance. Some examples: Discriminant Function, Random Forest, Support Vector Machine, etc. The package caret provides them.
