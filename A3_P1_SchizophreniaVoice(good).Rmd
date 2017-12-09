@@ -1,0 +1,493 @@
+---
+title: "Assignment2_Part1_VoiceInSchizophrenia"
+author: "Riccardo Fusaroli"
+date: "July 17, 2016"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r pressure}
+
+```
+
+## Assignment 3 - Part 1 - Assessing voice in schizophrenia
+
+Schizophrenia has been associated with "inappropriate" voice, sometimes monotone, sometimes croaky. A few studies indicate that pitch might be an index of schizophrenia. However, an ongoing meta-analysis of the literature (which you will have a go at in the last assignment) indicates that pitch mean and standard deviation are only weak indicators of diagnosis. Can we do better with our new fancy complex skills?
+
+The corpus you are asked to analyse is a set of voice recordings from people with schizophrenia (just after first diagnosis) and 1-1 matched controls (on gender, age, education). Each participant watched 10 videos of triangles moving across the screen and had to describe them (so you have circa 10 recordings per person). I have already extracted the pitch once every 10 milliseconds and you will have to use this data to assess differences in the voice.
+
+N.B. Question to be answered via email to Celine: can you characterize voice in schizophrenia as acoustically different? Report the methods you used to answer this question and the results from the analyses. Add a couple of lines trying to interpret the results (make sense of the difference). E.g. People with schizophrenia tend to have high-pitched voice, and present bigger swings in their prosody than controls. Add a couple of lines describing limitations of the data/analyses if any is relevant.
+
+N.B. There are looots of files to be dealt with. Probably too many for your computer. This is a challenge for you. Some (complementary) possible strategies: You can select a subset of files only (and you have to justify your choice). You can learn how to use the apply() or map() functions. You can coordinate with classmates.
+
+1. In the course of this assignment you have to first select one datafile and figure out how to:
+
+- Extract "standard" descriptors of pitch: Mean, standard deviation, range
+```{r pressure}
+
+studyone= read.table("Pitch/Study1D0S101T2_f0.txt", header=T)
+
+demo_data= read.table("DemoData.txt", header=T)
+
+#range
+mean=mean(studyone$f0)
+sd=sd(studyone$f0)
+
+```
+- Extract less "standard" descriptors of pitch you can think of (e.g. median, iqr, mean absoluted deviation, coefficient of variation)
+
+
+```{r pressure}
+median=median(studyone$f0)
+iqr=IQR(studyone$f0)
+meanad= mean(abs(studyone$f0 - mean(studyone$f0)))
+coefvar=sd(studyone$f0)/mean(studyone$f0)*100
+
+standard_data=cbind(mean, sd, median, iqr, meanad,coefvar) 
+```
+
+- Extract "complex" descriptors: recurrence quantification analysis
+
+```{r pressure}
+
+library(crqa)
+#Finding the optimal parameters: 
+par = list(lgM =  50, steps = seq(1, 6, 1),  radiusspan = 100,  radiussample = 40, normalize = 0,  rescale = 0,  mindiagline = 2,  minvertline = 2,  tw = 0,  whiteline = FALSE,  recpt = FALSE,  fnnpercent = 10,  typeami = "mindip") 
+ans= optimizeParam(studyone$f0, studyone$f0, par, min.rec= 3.5, max.rec= 4.5)
+#Choose a common value for delay, emb.dim and radius
+Results=crqa (studyone$f0, studyone$f0, delay=ans$delay, embed=ans$emddim, radius=ans$radius, normalize=0,rescale=0,mindiagline = 2,minvertline = 2)
+
+#Represent the plot:
+RP=Results$RP
+RP = matrix(as.numeric(RP), nrow = ncol(RP))
+cols = c("white","blue4")
+image(RP, xlab = "", ylab = "", col = cols)
+
+#Save the information from crqa
+
+RR= Results$RR
+DET= Results$DET
+maxL=Results$maxL
+L=Results$L
+ENTR=Results$ENTR
+LAM=Results$LAM
+TT=Results$TT
+
+rqa=data.frame(RR, DET, maxL, L, ENTR, LAM, TT)
+
+all_data=merge(standard_data, rqa)
+```
+
+2. Second you will have to turn the code into a function and loop through all the files (or even better use apply/sapply/lapply)
+- Remember to extract the relevant information from the file names (Participant, Diagnosis, Trial, Study)
+```{r pressure}
+#read in all the files
+#save their names to a list
+#use the list to read in everything
+file_list = list.files(path= "Pitch", full.names=T)
+all_files=lapply(file_list, FUN=read.table, header=TRUE)
+
+#First 7 letters get removed by substring() because the name has Pitch/ in it when it is read in.
+#50 is just the number where it should stop when reading in the name - it is just a really big number so it reads in all of it.
+#23 could be used if all the names were exactly the same length to cut off ".txt"
+#but there is a function to cut off the .txt part.
+
+names(all_files)= substring(file_list, 7, 50)
+chocolate=names(all_files)
+
+
+#to make it merge-able, rename and revalue 
+demo_data$Diagnosis=plyr::revalue(demo_data$Diagnosis, c("Control"="0", "Schizophrenia"="1"))
+demo_data=plyr::rename(demo_data, c("Diagnosis" = "diagnosis"))
+demo_data = plyr::rename(demo_data, c("Study" = "study"))
+demo_data = plyr::rename(demo_data, c("Subject" = "id"))
+
+
+#make a loop to get out all basic from all filenames
+
+i= 1
+basic_data=data.frame()
+
+for (z in chocolate) {
+  study= substring(chocolate[i], 6, 6)
+  diagnosis= substring(chocolate[i], 8, 8)
+  id= substring(chocolate[i], 10, 12)
+  ido= unlist(regmatches(chocolate[i], regexec("D(.+)T", chocolate[i])))
+  id_diff= ido[2]
+  #trial= substring(chocolate[i], 13, 15)
+  tr= unlist(regmatches(chocolate[i], regexec("T(.+)_", chocolate[i])))
+  trial= tr[2]
+  basic= cbind(study, id,id_diff, trial, diagnosis)
+  basic_data=rbind(basic_data, basic)
+  i=i+1
+}
+
+rm(basic, z, study, diagnosis, trial, id, i, tr)
+
+basic_and_demo=merge(basic_data, demo_data)
+
+```
+
+#Code to deal with all the files at once
+
+The goal is to have a file that contains basic- standard- rqa- and demodata, for all the voice files.
+1. function to get basic data 
+2. function to get standard data 
+3. function to have rqa data 
+4. create list with all filenames
+5. loop through the functions using the list
+6. merge the result with demo data
+
+
+```{r basic}
+
+#A function to get the info from the name of the files
+
+get_name= function(f_name) {
+  chocolate= substring(f_name, 7, 50) #get rid of Pitch\
+  
+  study= substring(chocolate, 6, 6) # get the number after Study
+  diagnosis= substring(chocolate, 8, 8) #get the number after D
+  id= substring(chocolate, 10, 12) #get the number after S #ids are the same for two person - wrong
+  ido= unlist(regmatches(chocolate, regexec("D(.+)T", chocolate))) #create extra ids that has the diagnosis too
+  id_diff= ido[2] # "0S101" - the difference between the same ids is the diagnosis, here number before S
+  tr= unlist(regmatches(chocolate, regexec("T(.+)_", chocolate))) #extracts everything between T and _
+  trial= tr[2] #get the number after T (using this method because there's trial 10 also)
+  
+  basic= data.frame(study, id, id_diff, trial, diagnosis) #save them to a dataframe
+  return(basic)
+}
+
+naem=get_name("Pitch/Study1D0S101T2_f0.txt") 
+
+#cannot use regexec() for all because there are two S in the filenames - for id this method won't work.
+#be careful about naming the folder the pitch data is in. The code stops working if the name of the folder changes.
+```
+
+```{r standard}
+
+#A function to get the standard data
+
+
+get_stan= function(f_name) {
+  chocolate=read.table(f_name, header=T) 
+  choco= chocolate$f0                                       
+  mean=mean(choco)
+  sd=sd(choco)
+  range= maximum - minimum
+  median=median(choco)
+  iqr=IQR(choco)
+  meanad= mean(abs(choco - mean(choco)))
+  coefvar=sd(choco)/mean(choco)*100
+  standard=data.frame(mean, sd, range, median, iqr, meanad,coefvar) 
+  return(standard)
+}
+
+lee= get_stan("Pitch/Study1D0S101T2_f0.txt") 
+
+```
+
+```{r rqa}
+#A function to get the rqa data
+
+library(crqa)
+get_rqa= function(f_name) {
+  chocolate=read.table(f_name, header=T)
+  
+  par = list(lgM =  50, steps = seq(1, 6, 1),  radiusspan = 100,  
+             radiussample = 40, normalize = 0,  rescale = 0,
+             mindiagline = 2,  minvertline = 2,  tw = 0,  
+             whiteline = FALSE,  recpt = FALSE,  
+             fnnpercent = 10,  typeami = "mindip") 
+  ans= optimizeParam(chocolate$f0, chocolate$f0, par, min.rec= 3.5, max.rec= 4.5)
+  Results=crqa (chocolate$f0, chocolate$f0, delay=ans$delay, embed=ans$emddim, radius=ans$radius,
+                normalize=0,rescale=0,mindiagline = 2,minvertline = 2)
+  RR= Results$RR
+  DET= Results$DET
+  maxL=Results$maxL
+  L=Results$L
+  ENTR=Results$ENTR
+  LAM=Results$LAM
+  TT=Results$TT
+  
+  rqa=data.frame(RR, DET, maxL, L, ENTR, LAM, TT)
+  return(rqa)
+}
+
+#A function that creates an "rqa" with NAs if there's an error
+
+haz_empty=function(){
+  RR= NA
+  DET=NA
+  maxL=NA
+  L=NA
+  ENTR=NA
+  LAM=NA
+  TT=NA
+  empty= data.frame(RR, DET,maxL,L,ENTR,LAM,TT)
+  return(empty)
+}
+  
+cerka= try(get_rqa("Pitch/Study1D0S101T4_f0.txt"), silent = T)
+
+# try() is used to make the loop continue running if there's an error
+# use if to save the error message and fill in the line with NAs so it can be merged to the other data frames
+
+if (class(cerka) == "try-error") { #if there's an error, cerka will be the error code. If that happens, this thing...
+  msg <- geterrmessage()           # ...saves the error message in case it's needed for something
+  cerka=haz_empty()                # ...uses haz_empty() to make cerka look like it should, only filled with NAs
+  }
+
+
+#REMEMBER TO COMMENT THAT YOU ARE USING THE OPTIMAL DIMENSIONS FOR EACH TIME SERIES AND NOT THE SAME ONE FOR ALL. USING THE SAME MEANS THAT ITS EASIER TO COMPARE. USING THE OPTIMAL ONE MEANS THAT NONE OF THEM ARE STRECHED OUT OR [SKWEEZED] INTO A SMALLER PLACE THEY NEED. MAKES COMPARING HARDER BUT IT RESPECTS THE DATA.
+
+```
+
+
+```{r demo}
+
+#A function for reading in the demo_data
+#Make the changes it needs (mainly because I hate when variables start with big letters)
+
+leer_demo= function() {
+  adat= read.table("DemoData.txt", header=T)
+  adat$Diagnosis=plyr::revalue(adat$Diagnosis, c("Control"="0", "Schizophrenia"="1"))
+  adat=plyr::rename(adat, c("Diagnosis" = "diagnosis"))
+  adat = plyr::rename(adat, c("Study" = "study"))
+  adat = plyr::rename(adat, c("Subject" = "id"))
+
+  return(adat)
+}
+
+dem_data= leer_demo() 
+
+```
+
+
+```{r}
+
+file_list = list.files(path= "Pitch", full.names=T) # this is a list with the names of the files
+
+store=data.frame() #create empty dataframe to store data
+
+for (i in file_list){
+  basic=get_name(i) 
+  standard= get_stan(i) 
+  rqa= try(get_rqa(i), silent=T) 
+  if (class(me) == "try-error") {
+    msg <- geterrmessage()
+    me=haz_empty()
+  }
+  under= cbind(basic, standard, rqa) 
+  store= rbind(store, under) #fill in the dataframe
+}
+
+
+demo= leer_demo()
+
+port_data= merge(store, demo) # create the final dataframe with everything
+
+rm(basic, standard, rqa, under, store, demo) #delete all the unnecesary thing I created 
+
+write.csv(port_data, file = "port3_data.csv", row.names = F) 
+
+
+```
+
+```{r pressure}
+
+#read in data
+port3_data= read.csv("port3_data.csv")
+port3_data$diagnosis= as.factor(port3_data$diagnosis)
+
+```
+
+3. Make one model per acoustic feature and test whether you can observe significant difference due to Diagnosis. Tip: Which other fixed factors should you control for (that is, include in the model)? Which random ones?
+- Bonus points: cross-validate the model and report the betas and standard errors from all rounds to get an idea of how robust the estimates are. 
+```{r pressure}
+
+library(lmerTest)
+
+#using the model Riccardo created in class because I can't create a better one
+#model_ric= range ~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id)
+
+
+model1= lmer(mean ~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id) ,port3_data)
+summary(model1) #significant
+#Diagnosis is significant when we look at the mean (ß=11.68, SE= 3.68, p = .002). The patients have a 11.7 Hz higher mean of pitch. The mean of pitch is a good predictor for diagnosing schizofrenia.
+
+
+model2= lmer(sd ~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model2) #not significant
+
+
+model5= lmer(median ~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model5) #significant
+
+#Diagnosis is significant when we look at the median of the pitch (ß=9.69, SE= 3.56, p = .008). The median of the pitch of the patients is nearly 10 Hz higher than the pitch of the controls. 
+
+model6= lmer(iqr ~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model6) #not significant
+
+model7= lmer(meanad ~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model7) #not significant
+
+model8= lmer(coefvar ~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model8) #significant 
+
+
+#Diagnosis is significant when we look at the coefficient of variance of the pitch (ß=-4.78, SE= 1.29, p = .0003). The coefficient of variance of the pitch of the patients is 5 Hz lower than the pitch of the controls. 
+#their voice varies less.
+
+
+model9= lmer(range ~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model9) # not significant 
+
+model10= lmer(RR~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model10) # not significant
+
+model11= lmer(DET~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model11) #significant
+
+#Diagnosis is significant when we look at the percent determinism of the RQA of the pitch (ß= -3.71, SE= 1.46, p = .01). The percent determinism for the pitch of the patients is lower than for the pitch of the controls. 
+#This can be interpreted as the patients speaking a less structured speech, that is not conventional,  and has more random intonation in it. #Shouldn't be interpreted it.
+
+model12= lmer(maxL~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model12) # not significant
+
+model13= lmer(L~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model13) # not significant
+
+model14= lmer(ENTR~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model14) #significant
+
+#Diagnosis is significant when we look at the entropy of the RQA of the pitch (ß= -0.16, SE= 0.04, p = .0006). The entropy for the pitch of the patients is lower than for the pitch of the controls. This can be interpreted as the patients speaking with more repetions in their pitch - their speech is more monoton. #Shouldn't be interpreted
+
+model15= lmer(LAM~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model15) #significant
+
+#Diagnosis is significant when we look at the laminarity of the RQA of the pitch (ß= -3.27, SE= 1.23, p = .009). The laminarity for the pitch of the patients is lower than for the pitch of the controls. 
+#This can be interpreted as the patients speaking more often with the same pitch - their speech is more monoton. #Shouldn't be interpreted
+
+model16= lmer(TT~ diagnosis + trial + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model16) #significant
+
+#Diagnosis is significant when we look at the trapping time of the RQA of the pitch (ß= -0.82, SE= 0.17, p < .001). The trapping time for the pitch of the patients is lower than for the pitch of the controls. 
+#This could be interpreted as the patients speaking with the same pitch for a shorter time (in a continuum). This means that even though they tend to get stuck using the same pitch, their use of pitch is more random than the one for controls. Their speech is not predictable, because it does not follow the conventional rules, it can change more often than the controls' pitch. #Shouldn't be interpreted
+```
+
+
+3a. Is study a significant predictor in these models? What should you infer from this? Does study interact with diagnosis? What should you infer from this?
+
+```{r pressure}
+
+model17= lmer(mean ~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id) ,port3_data)
+summary(model17) # not significant
+
+model18= lmer(mean ~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id) ,port3_data)
+summary(model18) # not significant
+
+model19= lmer(sd ~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model19) #not significant
+
+model20= lmer(sd ~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model20) #not significant
+
+model25= lmer(median ~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model25) # not significant
+
+model26= lmer(median ~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model26)  #not significant
+
+model27= lmer(iqr ~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model27) #not significant
+
+model28= lmer(iqr ~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model28) #not significant
+
+model29= lmer(meanad ~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model29) #not significant
+
+model30= lmer(meanad ~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model30) #not significant
+
+model31= lmer(coefvar ~ diagnosis + trial  + study +  (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model31) # not significant 
+
+model32= lmer(coefvar ~ diagnosis + trial  + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model32) # not significant  
+
+model33= lmer(range ~ diagnosis + trial  + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model33) # not significant 
+
+model34= lmer(range ~ diagnosis + trial  + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model34) # significant ß= -13.0712  SE= 6.3840  p= 0.04341
+
+model35= lmer(RR~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model35) # not significant
+
+model36= lmer(RR~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model36) # not significant
+
+model37= lmer(DET~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model37) # not significant
+
+model38= lmer(DET~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model38) # not significant
+
+model39= lmer(maxL~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model39) # significant  ß= 126.627  SE= 27.694  p< .0001 (1.97e-05)
+
+model40= lmer(maxL~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model40) # not significant
+
+model41= lmer(L~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model41) # significant ß= -0.25390 SE= 0.07765  p= 0.00142
+
+model42= lmer(L~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model42) # not significant
+
+model43= lmer(ENTR~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model43) # not significant
+
+model44= lmer(ENTR~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model44) # not significant
+
+model45= lmer(LAM~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model45) # not significant
+
+model46= lmer(LAM~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model46) # not significant
+
+model47= lmer(TT~ diagnosis + trial + study + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model47) # not significant
+
+model48= lmer(TT~ diagnosis + trial + study*diagnosis + (1 + trial | study) + (1 + diagnosis + trial | id),port3_data)
+summary(model48) # not significant
+
+```
+
+Significants for study:
+maxL (model39) ß= 126.627  SE= 27.694  p< .0001 (1.97e-05)
+L    (model41) ß= -0.25390 SE= 0.07765  p= 0.00142
+
+
+Significants for study*diagnosis:
+range   (model34) ß= -13.0712  SE= 6.3840  p= 0.04341
+
+***
+
+4. Bonus Question: Compare effect size of diagnosis across the different measures. Which measure seems most sensitive?
+- Tip: to compare across measures you need to put all of them on the same scale, that is, you need to "standardize" them (z-score)
+
+5. Bonus question. In the Clinical Info file you have additional information about the participants. Which additional parameters (e.g. age, gender) should we control for? Report the effects.
+
+6. Write a paragraph reporting methods and results
+
+[Next assignment: can we use these measures to build a tool that diagnoses people from voice only?]
+
+## N.B. Remember to save the acoustic features of voice in a separate file, so to be able to load them next time

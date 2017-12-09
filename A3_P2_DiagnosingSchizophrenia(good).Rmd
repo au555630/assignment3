@@ -1,0 +1,385 @@
+---
+title: "Assignment 3 - Part 2 - Diagnosing Schizophrenia from Voice"
+author: "Riccardo Fusaroli"
+date: "October 17, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Assignment 3 - Diagnosing schizophrenia from voice
+
+In the previous part of the assignment you generated a bunch of "features", that is, of quantitative descriptors of voice in schizophrenia, focusing on pitch.
+In the course of this assignment we will use them to try to automatically diagnose schizophrenia from voice only, that is, relying on the set of features you produced last time, we will try to produce an automated classifier.
+
+```{r}
+
+#library(CVMS) ??CVMS
+library(lmerTest)
+
+#read in data
+port3_data= read.csv("port3_data.csv")
+
+port3_data$id= as.factor(as.numeric(as.factor(port3_data$id)))
+port3_data$diagnosis= as.factor(port3_data$diagnosis)
+port3_data$diagnosis=plyr::revalue(port3_data$diagnosis, c("0"="Control", "1"="Schizophrenia"))
+port3_data$diagnosis= relevel(port3_data$diagnosis, ref= "Control")
+
+#get out NAs
+port3_data=na.omit(port3_data)
+#Upsample because of imbalanced data
+port3_data<- caret::upSample(x = port3_data,   y = port3_data$diagnosis,  yname = "diagnosis")
+
+```
+
+
+### Question 1: Can you diagnose schizophrenia from pitch range only? If so, how well?
+
+Build a logistic regression to see whether you can diagnose schizophrenia from pitch range only.
+Calculate the different performance measures (accuracy, sensitivity, specificity, PPV, NPV, ROC curve) on a logistic regression using the full dataset. Don't forget the random effects!
+
+```{r}
+
+#library(lmerTest)
+
+model= glmer(diagnosis ~ range  + (1 + trial | study) + (1 + trial | id),port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+summary(model) #range range       -0.003176   0.001037  -3.061  0.00220
+
+#Confusion matrix
+port3_data$PredictionsPerc=predict(model, type="response") #positive: scizo, negative: control
+port3_data$Predictions[port3_data$PredictionsPerc>0.5]="Schizophrenia" 
+port3_data$Predictions[port3_data$PredictionsPerc<=0.5]="Control"
+caret::confusionMatrix(data = port3_data$Predictions, reference = port3_data$diagnosis, positive = "Control") #control is the baseline
+
+#rigth upper corner is false negative (person is sick but is said to be ok)
+#left down corner is false positive (person is ok but is said to be sick)
+#basically predicts by chance
+#its better to have people treated than not treated, so move the treshold to 0.4 later
+#need to use same id - treated as "one", so we don't cross-validate on pairs (0101 won't be in the three_fold when 1101 is in the one_fold)
+
+# Prediction      Control Schizophrenia
+#   Control           198           146
+#   Schizophrenia     234           286
+
+
+
+#Rock curve
+library(pROC) 
+rocCurve <- pROC::roc(response = port3_data$diagnosis,   predictor = port3_data$PredictionsPerc) 
+auc(rocCurve) #0.598
+ci (rocCurve) #95% CI: 0.5603-0.6357
+plot(rocCurve, legacy.axes = TRUE) 
+
+```
+
+In the model, range is a significant predictor (ß= -0.003, SE= 0.001, p= 0.00220). However, according to the confusion matrix the model’s predictions are by chance. Range alone is not a good measure for predicting the diagnosis (area under the curve = 0.598 (confidence interval: 0.5603-0.6357)).
+Schizophrenia cannot be diagnosed by pitch range only.
+
+***
+
+Then cross-validate the logistic regression and re-calculate performance on the testing folds. N.B. The cross-validation functions you already have should be tweaked: you need to calculate these new performance measures.
+
+```{r cross_val function}
+
+
+#a function to calculate performance 
+f_cross_val= function(m) {
+  
+  #create a function for %not in% - from the net
+  "%not in%" <- function (x, table) is.na(match(x, table, nomatch=NA_integer_))
+  
+  #create empty dataframes to save output from cross-validation
+  croval_test= data.frame() #for the test data
+  #rm(saving)
+  
+  
+  #create folds
+  folds=caret::createFolds(unique(port3_data$id), 5)
+  
+  #loop through the folds
+  for (i in folds) {
+    #create a dataframe that has 3 folds - this is the train data
+    three_fold = subset(port3_data, id %not in% i)
+    #create a dataframe that has 1 fold - this is the test data
+    one_fold= subset(port3_data, id %in% i)
+    # fit the model to 3/4 of the data
+    modelx= m
+    modely= update(modelx, data= three_fold) 
+    # predict the 1/4 of the data
+    pred=predict(modely, one_fold, type="response", allow.new.levels = T) 
+    idf=one_fold$id
+    diag=one_fold$diagnosis
+    saving= cbind(pred, idf, diag)
+    # save the prediction to a dataframe
+    croval_test = rbind(croval_test, saving)
+  }
+
+  
+  #correct the variables
+  croval_test$diag= as.factor(croval_test$diag)
+  croval_test$diag=plyr::revalue(croval_test$diag, c("1"="Control", "2"="Schizophrenia"))
+  
+  #calculate performance
+  croval_test$diag= relevel(croval_test$diag, ref= "Control")
+  croval_test$prediction[croval_test$pred>0.5]="Schizophrenia" 
+  croval_test$prediction[croval_test$pred<=0.5]="Control"
+  conf_matrix= caret::confusionMatrix(data = croval_test$prediction, 
+                                      reference = croval_test$diag, positive = "Control")
+  
+  accuracy=conf_matrix$overall[1]
+  kappa=conf_matrix$overall[2]
+  sensitivity=conf_matrix$byClass[1]
+  specificity=conf_matrix$byClass[2]
+  ppv=conf_matrix$byClass[3]
+  npv=conf_matrix$byClass[4]
+  
+
+  rocCurve= pROC::roc(response = croval_test$diag, predictor = croval_test$pred)
+  auc=pROC::auc(rocCurve)
+  #pROC::ci (rocCurve)
+  #plot(rocCurve, legacy.axes = TRUE)
+  
+  result= data.frame(accuracy, kappa, sensitivity, specificity, ppv, npv, auc) 
+  
+  return(result) 
+}
+
+#see=f_cross_val(model1) 
+```
+
+N.B. the predict() function generates log odds (the full scale between minus and plus infinity). Log odds > 0 indicates a choice of 1, below a choice of 0.
+N.B. you need to decide whether calculate performance on each single test fold or save all the prediction for test folds in one datase, so to calculate overall performance.
+N.B. Now you have two levels of structure: subject and study. Should this impact your cross-validation?
+
+```{r}
+model_range=f_cross_val(model) 
+# accuracy      kappa sensitivity specificity       ppv       npv       auc
+#Accuracy 0.5416667 0.08333333   0.4467593   0.6365741 0.5514286 0.5350195 0.5582455
+
+```
+
+
+I could put the data from different studies apart and cross-validate them alone. But belonging to a certain study should not make a significant difference between the subjects. Therefore I think analysing them together is better and probably more robust (some difference might be there even if not significant, it could create (falsely) better cross-validated results if tested inside a study?)
+
+### Question 2 - Which single acoustic predictor is the best predictor of diagnosis?
+```{r models}
+#build the models
+
+model1= glmer(diagnosis ~ range  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE))
+
+model2= glmer(diagnosis ~ mean  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model3= glmer(diagnosis ~ sd  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE))
+
+model4= glmer(diagnosis ~ median  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model5= glmer(diagnosis ~ iqr  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE))
+
+model6= glmer(diagnosis ~ meanad  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model7= glmer(diagnosis ~ coefvar  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE))
+
+model8= glmer(diagnosis ~ RR  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model9= glmer(diagnosis ~ DET  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE))
+
+model10= glmer(diagnosis ~ maxL  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model11= glmer(diagnosis ~ L  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model12= glmer(diagnosis ~ ENTR  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model13= glmer(diagnosis ~ LAM  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model14= glmer(diagnosis ~ TT  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+models_all= c(model1, model2, model3, model4, model5, model6, model7, model8, model9, model10, model11, model12, model13, model14)
+
+```
+
+```{r best predictor}
+
+#get BIC #and z-value?
+
+stat=data.frame()
+
+for (model in models_all) {
+  #get the predictor
+  kacsa = names(model@frame)
+  model_name = kacsa[2]
+  # #get the z-value
+  # pato = as.numeric(coef(summary(model))[, "Pr(>|z|)"])
+  # z_value = pato[2]
+  #get the BIC value
+  BIC_value = BIC(model)
+  #bind it together
+  values = cbind(model_name, BIC_value)
+  stat = rbind(stat, values)
+  
+}
+
+stat
+
+```
+
+According to BIC trapping time is the best single predictor.
+TT
+BIC value 1182.23069486801
+
+```{r loop for cross_val}
+n=0 
+final=data.frame()
+
+while(n < 7) {
+  for (model in models_all) {
+    #cross validate function
+    cross=f_cross_val(model)
+    what=names(model@frame) 
+    name=what[2]
+    #name=as.character(model@call$formula[3])
+    res=cbind(cross, name)
+    final=rbind(final, res)
+  }
+  n=n+1
+}
+
+write.csv(final, file= "model_data_fixed.csv", row.names = F)
+
+```
+
+
+```{r}
+
+#read in data instead of running the models again
+all_result=read.csv("model_data_fixed.csv")
+
+#library(dplyr)
+
+#mean for all #... is best one for...
+mean_auc= summarise(group_by(all_result, all_result$name), m_AUC= mean(auc)) # coefvar, DET, ENTR
+mean_acc= summarise(group_by(all_result, all_result$name), m_accuracy= mean(accuracy)) # coefvar, TT, DET
+mean_kap= summarise(group_by(all_result, all_result$name), m_kappa= mean(kappa)) # coefvar, TT, DET
+mean_sen= summarise(group_by(all_result, all_result$name), m_sensitivity= mean(sensitivity)) # LAM, iqr, mean
+mean_spe= summarise(group_by(all_result, all_result$name), m_specificity= mean(specificity)) # coefvar, TT, range
+mean_ppv= summarise(group_by(all_result, all_result$name), m_ppv= mean(ppv)) # coefvar, TT, sd
+mean_npv= summarise(group_by(all_result, all_result$name), m_npv= mean(npv)) # LAM, mean, DET
+
+means= cbind( mean_auc, mean_acc[2], mean_kap[2], mean_sen[2], mean_spe[2], mean_ppv[2], mean_npv[2], BIC=stat$BIC_value)
+
+write.csv(means, "mean performance measures.csv")
+#coefvar, DET, TT
+
+```
+
+Coefficient of variance is the best single acoustic predictor of diagnosis. #Area under the curve: 0.7194037.
+
+According to the BIC-values (of which the lowest one means the best model), trapping time is the best single predictor, BIC = 1188. According to the performance measures, coefficient of variance is the best single acoustic predictor of diagnosis, and it has the highest area under the curve: 0.719 (where having 1 would be perfect performance).
+
+
+### Question 3 - Which combination of acoustic predictors is best for diagnosing schizophrenia?
+
+Now it's time to go wild! Use all (voice-related) variables and interactions you can think of. Compare models and select the best performing model you can find.
+
+Remember:
+- Out-of-sample error crucial to build the best model!
+- After choosing the model, send Celine and Riccardo the code of your model
+
+```{r}
+model15= glmer(diagnosis ~ coefvar + DET + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model16= glmer(diagnosis ~ coefvar + TT + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model17= glmer(diagnosis ~ coefvar + DET + TT + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model18= glmer(diagnosis ~ coefvar + LAM + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model19= glmer(diagnosis ~ coefvar + mean  + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+model20= glmer(diagnosis ~ coefvar + LAM + mean + (1 + trial | study) + (1 + trial | id), port3_data, family=binomial, control=glmerControl(calc.derivs = FALSE) )
+
+
+
+more_models= c(model15, model16, model17, model18, model19, model20)
+
+more_stat=data.frame()
+
+for (model in more_models) {
+  #get the predictor
+  model_name = name=as.character(model@call$formula[3])
+  # #get the z-value
+  # pato = as.numeric(coef(summary(model))[, "Pr(>|z|)"])
+  # z_value = pato[2]
+  #get the BIC value
+  BIC_value = BIC(model)
+  #bind it together
+  values = cbind(model_name, BIC_value)
+  more_stat = rbind(more_stat, values)
+  
+}
+
+more_stat #coefvar
+
+```
+
+```{r}
+n=0 
+final=data.frame()
+
+while(n < 5) {
+  for (model in more_models) {
+    #cross validate function
+    cross=f_cross_val(model)
+    name=as.character(model@call$formula[3])
+    res=cbind(cross, name)
+    final=rbind(final, res)
+  }
+  n=n+1
+}
+
+write.csv(final, file= "more_model_data.csv", row.names = F)
+
+
+
+```
+
+
+```{r}
+
+#read in data instead of running the models again
+more_result=read.csv("more_model_data.csv")
+
+
+#mean for all
+more_mean_auc= summarise(group_by(more_result, more_result$name), m_AUC= mean(auc)) # coefvar + LAM + mean
+more_mean_acc= summarise(group_by(more_result, more_result$name), m_accuracy= mean(accuracy)) # coefvar + mean 
+more_mean_kap= summarise(group_by(more_result, more_result$name), m_kappa= mean(kappa)) # coefvar + mean
+more_mean_sen= summarise(group_by(more_result, more_result$name), m_sensitivity= mean(sensitivity)) # coefvar + LAM + mean
+more_mean_spe= summarise(group_by(more_result, more_result$name), m_specificity= mean(specificity)) #  coefvar + LAM
+more_mean_ppv= summarise(group_by(more_result, more_result$name), m_ppv= mean(ppv)) # coefvar + LAM
+more_mean_npv= summarise(group_by(more_result, more_result$name), m_npv= mean(npv)) # coefvar + mean
+
+more_means= cbind(more_mean_auc, more_mean_acc[2], more_mean_kap[2], more_mean_sen[2], more_mean_spe[2], more_mean_ppv[2], more_mean_npv[2], BIC=more_stat$BIC_value)
+
+write.csv(more_means, "more mean performance measures.csv")
+
+```
+
+ Coefficient of variance + mean is the best one.
+
+
+### Question 4: Properly report the results
+
+METHODS SECTION: how did you analyse the data? That is, how did you extract the data, designed the models and compared their performance?
+
+RESULTS SECTION: can you diagnose schizophrenia based on voice? which features are used? Comment on the difference between the different performance measures.
+
+### Bonus question 5
+
+You have some additional bonus data involving speech rate, pauses, etc. Include them in your analysis. Do they improve classification?
+
+### Bonus question 6
+
+Logistic regression is only one of many classification algorithms. Try using others and compare performance. Some examples: Discriminant Function, Random Forest, Support Vector Machine, etc. The package caret provides them.
